@@ -11,12 +11,11 @@ from typing import Dict, Any, List, Optional
 from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder, LabelEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier
-from lime.lime_tabular import LimeTabularExplainer
 
 app = FastAPI(
     title="Student Academic Achievement Prediction API",
-    description="Advanced FastAPI backend supporting both SHAP and LIME Explainable AI (XAI) models.",
-    version="3.4.0"
+    description="Advanced FastAPI backend with 1:1 mapped Master Summary Roadmap and Sub-Sector Recommendations.",
+    version="3.5.0"
 )
 
 app.add_middleware(
@@ -39,7 +38,6 @@ model = None
 preprocessor = None
 label_encoder = None
 feature_config = None
-lime_explainer = None
 
 def get_preprocessor():
     binary_features = [
@@ -85,7 +83,7 @@ def find_dataset_path():
     return None
 
 def train_and_save_model_if_needed():
-    global model, preprocessor, label_encoder, feature_config, lime_explainer
+    global model, preprocessor, label_encoder, feature_config
     try:
         csv_path = find_dataset_path()
         if not csv_path or not os.path.exists(csv_path):
@@ -140,18 +138,6 @@ def train_and_save_model_if_needed():
         preprocessor = prep
         label_encoder = le
 
-        # Initialize LIME Explainer
-        try:
-            lime_explainer = LimeTabularExplainer(
-                training_data=np.array(X_encoded),
-                feature_names=X.columns.tolist(),
-                class_names=le.classes_.tolist(),
-                mode='classification',
-                random_state=42
-            )
-        except Exception:
-            pass
-
         joblib.dump(model, MODEL_PATH)
         joblib.dump(preprocessor, PREPROCESSOR_PATH)
         joblib.dump(label_encoder, LABEL_ENCODER_PATH)
@@ -167,7 +153,7 @@ def train_and_save_model_if_needed():
 
 @app.on_event("startup")
 def startup_event():
-    global model, preprocessor, label_encoder, feature_config, lime_explainer
+    global model, preprocessor, label_encoder, feature_config
     try:
         if os.path.exists(MODEL_PATH) and os.path.exists(PREPROCESSOR_PATH) and os.path.exists(LABEL_ENCODER_PATH):
             model = joblib.load(MODEL_PATH)
@@ -175,40 +161,6 @@ def startup_event():
             label_encoder = joblib.load(LABEL_ENCODER_PATH)
             with open(CONFIG_PATH, "r") as f:
                 feature_config = json.load(f)
-
-            # Re-initialize LIME explainer from loaded model & data if needed
-            csv_path = find_dataset_path()
-            if csv_path and os.path.exists(csv_path):
-                df = pd.read_csv(csv_path)
-                leakage_candidates = [
-                    "GPA_5", "GPA_%", "Appeared", "Passed", "Pass rate",
-                    "Appeared_numeric", "Passed_numeric", "Pass rate_numeric", "GPA_%_numeric",
-                    "Calculated_pass_rate", "Pass_rate_difference", "Calculated_GPA5_percentage",
-                    "Calculated_pass_rate_check", "Pass_rate_difference_check", "Target_numeric"
-                ]
-                drop_cols = list(set(leakage_candidates + ["ID", "EIIN", "Q2_Secondary_School_Name"]))
-                df_model = df.drop(columns=drop_cols, errors="ignore")
-                raw_psych_items = [
-                    "G1_Understand_Difficult_Subjects", "G2_Confidence_In_Core_Concepts", "G3_Master_School_Skills",
-                    "G4_Perform_Better_Than_Peers", "G5_Confidence_In_Exam_Questions", "G6_Nervous_Forget_Concepts",
-                    "G7_Anxious_Insomnia_Before_Exam", "G8_Anxious_Under_Pressure_Despite_Studying", "G9_Peaceful_During_Exam",
-                    "G10_Parents_Encouraged_Hard_Work", "G11_Family_Interested_In_Progress", "G12_Parents_Provided_Study_Materials",
-                    "G13_Family_Discussed_School_Progress", "G1_Understand_Difficult_Subjects_score", "G2_Confidence_In_Core_Concepts_score",
-                    "G3_Master_School_Skills_score", "G4_Perform_Better_Than_Peers_score", "G5_Confidence_In_Exam_Questions_score",
-                    "G6_Nervous_Forget_Concepts_score", "G7_Anxious_Insomnia_Before_Exam_score", "G8_Anxious_Under_Pressure_Despite_Studying_score",
-                    "G9_Peaceful_During_Exam_score", "G10_Parents_Encouraged_Hard_Work_score", "G11_Family_Interested_In_Progress_score",
-                    "G12_Parents_Provided_Study_Materials_score", "G13_Family_Discussed_School_Progress_score", "G9_Peaceful_During_Exam_reverse"
-                ]
-                df_model = df_model.drop(columns=raw_psych_items, errors="ignore")
-                X = df_model.drop(columns=["Q1_SSC_GPA"])
-                X_encoded = preprocessor.transform(X)
-                lime_explainer = LimeTabularExplainer(
-                    training_data=np.array(X_encoded),
-                    feature_names=X.columns.tolist(),
-                    class_names=label_encoder.classes_.tolist(),
-                    mode='classification',
-                    random_state=42
-                )
         else:
             train_and_save_model_if_needed()
     except Exception:
@@ -259,40 +211,58 @@ class FeedbackInput(BaseModel):
 
 @app.get("/health")
 def health_check():
-    return {"status": "healthy", "model_loaded": model is not None, "lime_ready": lime_explainer is not None}
+    return {"status": "healthy", "model_loaded": model is not None}
 
 def generate_comprehensive_recommendations(prediction: str, input_data: Dict[str, Any]) -> List[Dict[str, str]]:
     recs = []
+
+    # 1. Master Summary Roadmap (Exactly 4 key points mapped 1:1 with sub-sectors below)
+    summary_text = (
+        "১. দৈনিক নিজ-অধ্যয়ন সময় বৃদ্ধি করা (কমপক্ষে ৪ ঘণ্টা)।\n"
+        "২. সোশ্যাল মিডিয়া ও ইন্টারনেট অপব্যবহার নিয়ন্ত্রণ করা।\n"
+        "৩. পরীক্ষার উদ্বেগ ও নার্ভাসনেস দূর করা (মক টেস্টের মাধ্যমে)।\n"
+        "৪. ক্লাসে ৭৫% উপস্থিতি এবং নিয়মিত বাড়ির কাজ সম্পন্ন করা।"
+    )
     if prediction in ["Medium", "Low"]:
         recs.append({
-            "category": "উন্নয়ন রোডম্যাপ (Promotion Roadmap)",
+            "category": "উন্নয়ন রোডম্যাপ (Master Summary Roadmap)",
             "title": "মধ্যম/নিম্ন ক্যাটাগরি থেকে জিপিএ ৫ (High Category) অর্জনের কর্মপরিকল্পনা",
-            "suggestion": "আপনার বর্তমান পূর্বাভাস অনুযায়ী আপনি কাঙ্ক্ষিত উচ্চ স্তরে (GPA 4.50+) পৌঁছাতে নিচের পদক্ষেপগুলো নিন:\n১. দৈনিক নিজ-অধ্যয়ন বাড়িয়ে কমপক্ষে ৪ ঘণ্টা করুন।\n২. শুধু মুখস্থ না করে মৌলিক ধারণা ও সৃজনশীল প্র্যাকটিস বাড়ান।\n৩. নিয়মিত মক টেস্ট দিয়ে পরীক্ষার ভীতি দূর করুন।"
+            "suggestion": summary_text
+        })
+    else:
+        recs.append({
+            "category": "উন্নয়ন রোডম্যাপ (Master Summary Roadmap)",
+            "title": "শীর্ষ গ্রেড (GPA 5.00) ধরে রাখার মাস্টারসামারি",
+            "suggestion": summary_text
         })
 
-    study_hours = input_data.get("C2_Daily_Self_Study_Hours", "")
-    if study_hours == "Less than 2 Hours":
-        recs.append({
-            "category": "অধ্যয়ন রুটিন (Study Routine)",
-            "title": "দৈনিক নিজ-অধ্যয়নের সময় কমপক্ষে ৪ ঘণ্টায় উন্নীত করুন",
-            "suggestion": "গবেষণায় প্রমাণিত হয়েছে যে, দৈনিক ২ থেকে ৪ ঘণ্টা বা তার বেশি সময় নিজ-অধ্যয়ন করলে এসএসসি পরীক্ষার ফলাফল (GPA 4.50+) অর্জনের সম্ভাবনা বহুগুণ বৃদ্ধি পায়।"
-        })
+    # 2. Sub-Sector 1: Study Hours (Corresponds to point 1)
+    recs.append({
+        "category": "উপ-খাত ১: অধ্যয়ন রুটিন (Study Routine)",
+        "title": "দৈনিক নিজ-অধ্যয়নের সময় কমপক্ষে ৪ ঘণ্টায় উন্নীত করুন",
+        "suggestion": "গবেষণায় প্রমাণিত হয়েছে যে, দৈনিক ২ থেকে ৪ ঘণ্টা বা তার বেশি সময় নিজ-অধ্যয়ন করলে এসএসসি পরীক্ষার ফলাফল (GPA 4.50+) অর্জনের সম্ভাবনা বহুগুণ বৃদ্ধি পায়। রুটিনমাফিক সব বিষয়ে সময় দিন।"
+    })
 
-    anxiety = input_data.get("Exam_Anxiety_Score", 3.0)
-    if anxiety >= 3.0:
-        recs.append({
-            "category": "মনস্তাত্ত্বিক উন্নয়ন (Psychometric - Anxiety)",
-            "title": "পরীক্ষার উদ্বেগ ও ভীতি নিয়ন্ত্রণ করুন (Exam Anxiety Management)",
-            "suggestion": "আপনার পরীক্ষায় উদ্বেগ স্কোর তুলনামূলক বেশি। নিয়মিত গভীর দীর্ঘশ্বাস ব্যায়াম (Deep Breathing) এবং পর্যাপ্ত মক টেস্ট দেওয়ার মাধ্যমে পরীক্ষার ভীতি দূর করুন।"
-        })
+    # 3. Sub-Sector 2: Social Media & Internet (Corresponds to point 2)
+    recs.append({
+        "category": "উপ-খাত ২: ডিজিটাল ব্যবহার (Internet & Social Media)",
+        "title": "সোশ্যাল মিডিয়া ও বিনোদনে ইন্টারনেট ব্যবহার সীমিত করুন",
+        "suggestion": "অতিরিক্ত সোশ্যাল মিডিয়া ব্যবহার মনোযোগ বিক্ষিপ্ত করে। ইন্টারনেটকে কেবল শিক্ষামূলক কনটেন্ট ও পড়াশোনার গবেষণায় ব্যবহার করুন।"
+    })
 
-    efficacy = input_data.get("Academic_Self_Efficacy_Score", 3.0)
-    if efficacy < 3.5:
-        recs.append({
-            "category": "মনস্তাত্ত্বিক উন্নয়ন (Psychometric - Self-Efficacy)",
-            "title": "একাডেমিক আত্ম-কার্যকারিতা ও কনফিডেন্স বাড়ান",
-            "suggestion": "কঠিন বিষয়গুলোতে নিজের ওপর বিশ্বাস বাড়াতে হবে। শিক্ষকদের সাহায্য নিন এবং মৌলিক ধারণাগুলো পরিষ্কার করুন।"
-        })
+    # 4. Sub-Sector 3: Exam Anxiety (Corresponds to point 3)
+    recs.append({
+        "category": "উপ-খাত ৩: মনস্তাত্ত্বিক উন্নয়ন (Exam Anxiety Management)",
+        "title": "পরীক্ষার উদ্বেগ ও ভীতি নিয়ন্ত্রণ করুন",
+        "suggestion": "নিয়মিত গভীর দীর্ঘশ্বাস ব্যায়াম (Deep Breathing), পর্যাপ্ত ঘুম এবং পর্যাপ্ত মক টেস্ট দেওয়ার মাধ্যমে পরীক্ষার ভীতি দূর করুন।"
+    })
+
+    # 5. Sub-Sector 4: Attendance & Homework (Corresponds to point 4)
+    recs.append({
+        "category": "উপ-খাত ৪: প্রাতিষ্ঠানিক শৃঙ্খলা (Attendance & Homework)",
+        "title": "ক্লাসে উপস্থিতি ৭৫% ও নিয়মিত বাড়ির কাজ নিশ্চিত করুন",
+        "suggestion": "স্কুলের লেকচার ও নিয়মিত হোমওয়ার্ক সম্পন্ন করলে কনসেপ্ট দীর্ঘস্থায়ী হয় এবং গ্রেড উন্নত হয়।"
+    })
 
     return recs
 
@@ -311,24 +281,6 @@ def predict_student(payload: StudentInput):
         label_mapping = {"Below 3.00": "Low", "3.00 - 4.49": "Medium", "4.50 - 5.00": "High"}
         human_prediction = label_mapping.get(class_label, class_label)
         probabilities = {label_mapping.get(str(cls), str(cls)): float(probs[i]) for i, cls in enumerate(label_encoder.classes_)}
-
-        # Generate LIME local explanation if explainer is ready
-        lime_results = []
-        if lime_explainer is not None:
-            try:
-                exp = lime_explainer.explain_instance(
-                    data_row=X_encoded[0],
-                    predict_fn=model.predict_proba,
-                    num_features=4
-                )
-                lime_list = exp.as_list()
-                for item in lime_list:
-                    lime_results.append({
-                        "condition": str(item[0]),
-                        "weight": float(item[1])
-                    })
-            except Exception:
-                pass
 
         explanation = [
             {
@@ -374,7 +326,6 @@ def predict_student(payload: StudentInput):
             "probabilities": probabilities,
             "explanation": explanation,
             "recommendations": recommendations,
-            "lime_explanation": lime_results,
             "statistics": {
                 "confidence_score": float(np.max(probs) * 100),
                 "psychometric_index": float((input_dict.get('Academic_Self_Efficacy_Score', 3.0) + (6.0 - input_dict.get('Exam_Anxiety_Score', 3.0)) + input_dict.get('Family_Academic_Support_Score', 3.0)) / 3.0),
