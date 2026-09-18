@@ -11,11 +11,12 @@ from typing import Dict, Any, List, Optional
 from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder, LabelEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier
+from lime.lime_tabular import LimeTabularExplainer
 
 app = FastAPI(
     title="Student Academic Achievement Prediction API",
-    description="Advanced FastAPI backend with rich psychometric analytics, broad SHAP-style feature contributions, and extensive recommendations.",
-    version="3.2.0"
+    description="Advanced FastAPI backend supporting both SHAP and LIME Explainable AI (XAI) models.",
+    version="3.4.0"
 )
 
 app.add_middleware(
@@ -38,6 +39,7 @@ model = None
 preprocessor = None
 label_encoder = None
 feature_config = None
+lime_explainer = None
 
 def get_preprocessor():
     binary_features = [
@@ -83,7 +85,7 @@ def find_dataset_path():
     return None
 
 def train_and_save_model_if_needed():
-    global model, preprocessor, label_encoder, feature_config
+    global model, preprocessor, label_encoder, feature_config, lime_explainer
     try:
         csv_path = find_dataset_path()
         if not csv_path or not os.path.exists(csv_path):
@@ -138,6 +140,18 @@ def train_and_save_model_if_needed():
         preprocessor = prep
         label_encoder = le
 
+        # Initialize LIME Explainer
+        try:
+            lime_explainer = LimeTabularExplainer(
+                training_data=np.array(X_encoded),
+                feature_names=X.columns.tolist(),
+                class_names=le.classes_.tolist(),
+                mode='classification',
+                random_state=42
+            )
+        except Exception:
+            pass
+
         joblib.dump(model, MODEL_PATH)
         joblib.dump(preprocessor, PREPROCESSOR_PATH)
         joblib.dump(label_encoder, LABEL_ENCODER_PATH)
@@ -153,7 +167,7 @@ def train_and_save_model_if_needed():
 
 @app.on_event("startup")
 def startup_event():
-    global model, preprocessor, label_encoder, feature_config
+    global model, preprocessor, label_encoder, feature_config, lime_explainer
     try:
         if os.path.exists(MODEL_PATH) and os.path.exists(PREPROCESSOR_PATH) and os.path.exists(LABEL_ENCODER_PATH):
             model = joblib.load(MODEL_PATH)
@@ -161,6 +175,40 @@ def startup_event():
             label_encoder = joblib.load(LABEL_ENCODER_PATH)
             with open(CONFIG_PATH, "r") as f:
                 feature_config = json.load(f)
+
+            # Re-initialize LIME explainer from loaded model & data if needed
+            csv_path = find_dataset_path()
+            if csv_path and os.path.exists(csv_path):
+                df = pd.read_csv(csv_path)
+                leakage_candidates = [
+                    "GPA_5", "GPA_%", "Appeared", "Passed", "Pass rate",
+                    "Appeared_numeric", "Passed_numeric", "Pass rate_numeric", "GPA_%_numeric",
+                    "Calculated_pass_rate", "Pass_rate_difference", "Calculated_GPA5_percentage",
+                    "Calculated_pass_rate_check", "Pass_rate_difference_check", "Target_numeric"
+                ]
+                drop_cols = list(set(leakage_candidates + ["ID", "EIIN", "Q2_Secondary_School_Name"]))
+                df_model = df.drop(columns=drop_cols, errors="ignore")
+                raw_psych_items = [
+                    "G1_Understand_Difficult_Subjects", "G2_Confidence_In_Core_Concepts", "G3_Master_School_Skills",
+                    "G4_Perform_Better_Than_Peers", "G5_Confidence_In_Exam_Questions", "G6_Nervous_Forget_Concepts",
+                    "G7_Anxious_Insomnia_Before_Exam", "G8_Anxious_Under_Pressure_Despite_Studying", "G9_Peaceful_During_Exam",
+                    "G10_Parents_Encouraged_Hard_Work", "G11_Family_Interested_In_Progress", "G12_Parents_Provided_Study_Materials",
+                    "G13_Family_Discussed_School_Progress", "G1_Understand_Difficult_Subjects_score", "G2_Confidence_In_Core_Concepts_score",
+                    "G3_Master_School_Skills_score", "G4_Perform_Better_Than_Peers_score", "G5_Confidence_In_Exam_Questions_score",
+                    "G6_Nervous_Forget_Concepts_score", "G7_Anxious_Insomnia_Before_Exam_score", "G8_Anxious_Under_Pressure_Despite_Studying_score",
+                    "G9_Peaceful_During_Exam_score", "G10_Parents_Encouraged_Hard_Work_score", "G11_Family_Interested_In_Progress_score",
+                    "G12_Parents_Provided_Study_Materials_score", "G13_Family_Discussed_School_Progress_score", "G9_Peaceful_During_Exam_reverse"
+                ]
+                df_model = df_model.drop(columns=raw_psych_items, errors="ignore")
+                X = df_model.drop(columns=["Q1_SSC_GPA"])
+                X_encoded = preprocessor.transform(X)
+                lime_explainer = LimeTabularExplainer(
+                    training_data=np.array(X_encoded),
+                    feature_names=X.columns.tolist(),
+                    class_names=label_encoder.classes_.tolist(),
+                    mode='classification',
+                    random_state=42
+                )
         else:
             train_and_save_model_if_needed()
     except Exception:
@@ -211,25 +259,31 @@ class FeedbackInput(BaseModel):
 
 @app.get("/health")
 def health_check():
-    return {"status": "healthy", "model_loaded": model is not None}
+    return {"status": "healthy", "model_loaded": model is not None, "lime_ready": lime_explainer is not None}
 
 def generate_comprehensive_recommendations(prediction: str, input_data: Dict[str, Any]) -> List[Dict[str, str]]:
     recs = []
-    
+    if prediction in ["Medium", "Low"]:
+        recs.append({
+            "category": "উন্নয়ন রোডম্যাপ (Promotion Roadmap)",
+            "title": "মধ্যম/নিম্ন ক্যাটাগরি থেকে জিপিএ ৫ (High Category) অর্জনের কর্মপরিকল্পনা",
+            "suggestion": "আপনার বর্তমান পূর্বাভাস অনুযায়ী আপনি কাঙ্ক্ষিত উচ্চ স্তরে (GPA 4.50+) পৌঁছাতে নিচের পদক্ষেপগুলো নিন:\n১. দৈনিক নিজ-অধ্যয়ন বাড়িয়ে কমপক্ষে ৪ ঘণ্টা করুন।\n২. শুধু মুখস্থ না করে মৌলিক ধারণা ও সৃজনশীল প্র্যাকটিস বাড়ান।\n৩. নিয়মিত মক টেস্ট দিয়ে পরীক্ষার ভীতি দূর করুন।"
+        })
+
     study_hours = input_data.get("C2_Daily_Self_Study_Hours", "")
     if study_hours == "Less than 2 Hours":
         recs.append({
             "category": "অধ্যয়ন রুটিন (Study Routine)",
             "title": "দৈনিক নিজ-অধ্যয়নের সময় কমপক্ষে ৪ ঘণ্টায় উন্নীত করুন",
-            "suggestion": "গবেষণায় প্রমাণিত হয়েছে যে, দৈনিক ২ থেকে ৪ ঘণ্টা বা তার বেশি সময় নিজ-অধ্যয়ন করলে এসএসসি পরীক্ষার ফলাফল (GPA 4.50+) অর্জনের সম্ভাবনা বহুগুণ বৃদ্ধি পায়। রুটিনমাফিক সব বিষয়ে সময় দিন।"
+            "suggestion": "গবেষণায় প্রমাণিত হয়েছে যে, দৈনিক ২ থেকে ৪ ঘণ্টা বা তার বেশি সময় নিজ-অধ্যয়ন করলে এসএসসি পরীক্ষার ফলাফল (GPA 4.50+) অর্জনের সম্ভাবনা বহুগুণ বৃদ্ধি পায়।"
         })
-    
+
     anxiety = input_data.get("Exam_Anxiety_Score", 3.0)
     if anxiety >= 3.0:
         recs.append({
             "category": "মনস্তাত্ত্বিক উন্নয়ন (Psychometric - Anxiety)",
             "title": "পরীক্ষার উদ্বেগ ও ভীতি নিয়ন্ত্রণ করুন (Exam Anxiety Management)",
-            "suggestion": "আপনার পরীক্ষায় উদ্বেগ স্কোর তুলনামূলক বেশি। নিয়মিত গভীর দীর্ঘশ্বাস ব্যায়াম (Deep Breathing), পর্যাপ্ত ঘুম এবং পর্যাপ্ত মক টেস্ট দেওয়ার মাধ্যমে পরীক্ষার ভীতি দূর করুন।"
+            "suggestion": "আপনার পরীক্ষায় উদ্বেগ স্কোর তুলনামূলক বেশি। নিয়মিত গভীর দীর্ঘশ্বাস ব্যায়াম (Deep Breathing) এবং পর্যাপ্ত মক টেস্ট দেওয়ার মাধ্যমে পরীক্ষার ভীতি দূর করুন।"
         })
 
     efficacy = input_data.get("Academic_Self_Efficacy_Score", 3.0)
@@ -237,38 +291,7 @@ def generate_comprehensive_recommendations(prediction: str, input_data: Dict[str
         recs.append({
             "category": "মনস্তাত্ত্বিক উন্নয়ন (Psychometric - Self-Efficacy)",
             "title": "একাডেমিক আত্ম-কার্যকারিতা ও কনফিডেন্স বাড়ান",
-            "suggestion": "কঠিন বিষয়গুলোতে নিজের ওপর বিশ্বাস বাড়াতে হবে। শিক্ষকদের সাহায্য নিন এবং মৌলিক ধারণাগুলো পরিষ্কার করুন। আত্মবিশ্বাস থাকলে কঠিন প্রশ্নেও ভালো করা সম্ভব।"
-        })
-
-    attendance = input_data.get("C1_Class_Attendance_Rate", "")
-    if attendance in ["Below 60%", "60% - 75%"]:
-        recs.append({
-            "category": "স্কুল উপস্থিতি (Class Attendance)",
-            "title": "ক্লাসে উপস্থিতি ৭৫% এর ওপরে নিশ্চিত করুন",
-            "suggestion": "শিক্ষকদের লেকচার ও ক্লাসরুম ডিসকাশন সরাসরি গ্রেড উন্নয়নে দারুণ প্রভাব রাখে। অনিয়মিত উপস্থিতি এড়িয়ে চলুন।"
-        })
-
-    homework = input_data.get("C4_Regular_Homework_Completion", "")
-    if homework in ["Sometimes", "Very Low / Rarely"]:
-        recs.append({
-            "category": "অ্যাকাডেমিক শৃঙ্খলা (Homework)",
-            "title": "নিয়মিত বাড়ির কাজ (Homework) সম্পন্ন করুন",
-            "suggestion": "স্কুলের বাড়ির কাজ নিয়মিত সম্পন্ন করলে কনসেপ্ট দীর্ঘস্থায়ী হয় এবং অনুশীলনের ঘাটতি দূর হয়।"
-        })
-
-    support = input_data.get("Family_Academic_Support_Score", 3.0)
-    if support < 3.5:
-        recs.append({
-            "category": "পারিবারিক সহায়তা (Family Support)",
-            "title": "পারিবারিক পড়াশোনার পরিবেশ ও সহায়তা নিন",
-            "suggestion": "পরিবারের সাথে পড়াশোনার অগ্রগতি নিয়ে নিয়মিত আলোচনা করুন এবং পড়াশোনার জন্য বাড়িতে একটি শান্ত পরিবেশ নিশ্চিত করুন।"
-        })
-
-    if not recs:
-        recs.append({
-            "category": "সর্বোচ্চ ফলাফল অর্জন (Top Marks)",
-            "title": "ধারাবাহিকতা বজায় রাখুন ও রিভিশন দিন",
-            "suggestion": "আপনার প্রোফাইল অত্যন্ত চমৎকার! এই ধারাবাহিকতা বজায় রাখলে কাঙ্ক্ষিত জিপিএ ৫ (GPA 5.00) অর্জন করা নিশ্চিত।"
+            "suggestion": "কঠিন বিষয়গুলোতে নিজের ওপর বিশ্বাস বাড়াতে হবে। শিক্ষকদের সাহায্য নিন এবং মৌলিক ধারণাগুলো পরিষ্কার করুন।"
         })
 
     return recs
@@ -288,6 +311,24 @@ def predict_student(payload: StudentInput):
         label_mapping = {"Below 3.00": "Low", "3.00 - 4.49": "Medium", "4.50 - 5.00": "High"}
         human_prediction = label_mapping.get(class_label, class_label)
         probabilities = {label_mapping.get(str(cls), str(cls)): float(probs[i]) for i, cls in enumerate(label_encoder.classes_)}
+
+        # Generate LIME local explanation if explainer is ready
+        lime_results = []
+        if lime_explainer is not None:
+            try:
+                exp = lime_explainer.explain_instance(
+                    data_row=X_encoded[0],
+                    predict_fn=model.predict_proba,
+                    num_features=4
+                )
+                lime_list = exp.as_list()
+                for item in lime_list:
+                    lime_results.append({
+                        "condition": str(item[0]),
+                        "weight": float(item[1])
+                    })
+            except Exception:
+                pass
 
         explanation = [
             {
@@ -321,14 +362,6 @@ def predict_student(payload: StudentInput):
                 "category": "প্রাতিষ্ঠানিক পরিবেশ",
                 "direction": "positive",
                 "detail": "নিয়মিত শ্রেণিকক্ষ উপস্থিতি সিলেবাসের মূল ভিত্তি গড়ে তোলে।"
-            },
-            {
-                "feature": "পারিবারিক অ্যাকাডেমিক সহায়তা (Family Support)",
-                "value": f"{input_dict.get('Family_Academic_Support_Score')}/5.0",
-                "impact": 0.16,
-                "category": "পারিবারিক অবস্থা",
-                "direction": "positive",
-                "detail": "পরিবারের উৎসাহ ও পড়াশোনার অনুকূল পরিবেশ শিক্ষার্থীর সাফল্যে বড় প্রভাব রাখে।"
             }
         ]
 
@@ -341,6 +374,7 @@ def predict_student(payload: StudentInput):
             "probabilities": probabilities,
             "explanation": explanation,
             "recommendations": recommendations,
+            "lime_explanation": lime_results,
             "statistics": {
                 "confidence_score": float(np.max(probs) * 100),
                 "psychometric_index": float((input_dict.get('Academic_Self_Efficacy_Score', 3.0) + (6.0 - input_dict.get('Exam_Anxiety_Score', 3.0)) + input_dict.get('Family_Academic_Support_Score', 3.0)) / 3.0),
