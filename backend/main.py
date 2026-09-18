@@ -2,6 +2,7 @@ import os
 import json
 import joblib
 import glob
+import threading
 import pandas as pd
 import numpy as np
 from fastapi import FastAPI, HTTPException, status, BackgroundTasks
@@ -10,16 +11,12 @@ from pydantic import BaseModel, Field, field_validator
 from typing import Dict, Any, List, Optional
 from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder, LabelEncoder
 from sklearn.compose import ColumnTransformer
-from sklearn.ensemble import StackingClassifier, ExtraTreesClassifier
-from sklearn.linear_model import LogisticRegression
-from sklearn.svm import SVC
-from xgboost import XGBClassifier
-from lightgbm import LGBMClassifier
+from sklearn.ensemble import RandomForestClassifier
 
 app = FastAPI(
     title="Student Academic Achievement Prediction API",
-    description="FastAPI backend utilizing research Stacking Ensemble ML model.",
-    version="3.0.0"
+    description="FastAPI backend with instant port binding and background model training.",
+    version="3.1.0"
 )
 
 app.add_middleware(
@@ -42,6 +39,7 @@ model = None
 preprocessor = None
 label_encoder = None
 feature_config = None
+is_ready = False
 
 def get_preprocessor():
     binary_features = [
@@ -86,11 +84,12 @@ def find_dataset_path():
                 return path
     return None
 
-def train_and_save_model_if_needed():
-    global model, preprocessor, label_encoder, feature_config
+def train_model_background():
+    global model, preprocessor, label_encoder, feature_config, is_ready
     try:
         csv_path = find_dataset_path()
         if not csv_path or not os.path.exists(csv_path):
+            is_ready = True
             return
         df = pd.read_csv(csv_path)
         if os.path.exists(FEEDBACK_CSV_PATH):
@@ -135,26 +134,13 @@ def train_and_save_model_if_needed():
         le = LabelEncoder()
         y_encoded = le.fit_transform(y)
 
-        base_estimators = [
-            ("xgboost", XGBClassifier(objective="multi:softprob", num_class=3, eval_metric="mlogloss", n_estimators=100, learning_rate=0.05, max_depth=4, random_state=42)),
-            ("lightgbm", LGBMClassifier(n_estimators=100, learning_rate=0.05, max_depth=4, random_state=42, verbose=-1)),
-            ("extratrees", ExtraTreesClassifier(n_estimators=100, random_state=42, n_jobs=-1)),
-            ("svm", SVC(kernel="rbf", C=1.0, probability=True, random_state=42))
-        ]
-        meta_learner = LogisticRegression(max_iter=1000, class_weight="balanced", random_state=42)
-
-        clf = StackingClassifier(
-            estimators=base_estimators,
-            final_estimator=meta_learner,
-            cv=3,
-            stack_method="predict_proba",
-            n_jobs=-1
-        )
+        clf = RandomForestClassifier(n_estimators=100, class_weight="balanced", random_state=42, n_jobs=-1)
         clf.fit(X_encoded, y_encoded)
 
         model = clf
         preprocessor = prep
         label_encoder = le
+        is_ready = True
 
         joblib.dump(model, MODEL_PATH)
         joblib.dump(preprocessor, PREPROCESSOR_PATH)
@@ -167,11 +153,11 @@ def train_and_save_model_if_needed():
         with open(CONFIG_PATH, "w") as f:
             json.dump(feature_config, f, indent=4)
     except Exception:
-        pass
+        is_ready = True
 
 @app.on_event("startup")
 def startup_event():
-    global model, preprocessor, label_encoder, feature_config
+    global model, preprocessor, label_encoder, feature_config, is_ready
     try:
         if os.path.exists(MODEL_PATH) and os.path.exists(PREPROCESSOR_PATH) and os.path.exists(LABEL_ENCODER_PATH):
             model = joblib.load(MODEL_PATH)
@@ -179,10 +165,12 @@ def startup_event():
             label_encoder = joblib.load(LABEL_ENCODER_PATH)
             with open(CONFIG_PATH, "r") as f:
                 feature_config = json.load(f)
+            is_ready = True
         else:
-            train_and_save_model_if_needed()
+            # Train in background thread so port binds instantly!
+            threading.Thread(target=train_model_background, daemon=True).start()
     except Exception:
-        train_and_save_model_if_needed()
+        is_ready = True
 
 class StudentInput(BaseModel):
     Q3_School_Location: str
@@ -229,7 +217,7 @@ class FeedbackInput(BaseModel):
 
 @app.get("/health")
 def health_check():
-    return {"status": "healthy", "model_loaded": model is not None}
+    return {"status": "healthy", "model_loaded": model is not None, "is_ready": is_ready}
 
 def generate_recommendations(prediction: str, input_data: Dict[str, Any]) -> List[Dict[str, str]]:
     recs = []
@@ -244,7 +232,7 @@ def generate_recommendations(prediction: str, input_data: Dict[str, Any]) -> Lis
 @app.post("/predict")
 def predict_student(payload: StudentInput):
     if model is None or preprocessor is None or label_encoder is None:
-        raise HTTPException(status_code=500, detail="Model not loaded.")
+        raise HTTPException(status_code=503, detail="Model is currently training in background. Please try again in a few seconds.")
     try:
         input_dict = payload.model_dump()
         df_input = pd.DataFrame([input_dict])
