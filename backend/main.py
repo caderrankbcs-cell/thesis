@@ -346,3 +346,4 @@ def submit_feedback(feedback: FeedbackInput, background_tasks: BackgroundTasks):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Error saving feedback: {str(e)}"
         )
+}
