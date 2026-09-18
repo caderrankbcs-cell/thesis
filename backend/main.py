@@ -10,12 +10,16 @@ from pydantic import BaseModel, Field, field_validator
 from typing import Dict, Any, List, Optional
 from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder, LabelEncoder
 from sklearn.compose import ColumnTransformer
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import StackingClassifier, ExtraTreesClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.svm import SVC
+from xgboost import XGBClassifier
+from lightgbm import LGBMClassifier
 
 app = FastAPI(
     title="Student Academic Achievement Prediction API",
-    description="FastAPI backend utilizing Random Forest ML model.",
-    version="2.7.1"
+    description="FastAPI backend utilizing research Stacking Ensemble ML model.",
+    version="3.0.0"
 )
 
 app.add_middleware(
@@ -131,7 +135,21 @@ def train_and_save_model_if_needed():
         le = LabelEncoder()
         y_encoded = le.fit_transform(y)
 
-        clf = RandomForestClassifier(n_estimators=200, class_weight="balanced", random_state=42, n_jobs=-1)
+        base_estimators = [
+            ("xgboost", XGBClassifier(objective="multi:softprob", num_class=3, eval_metric="mlogloss", n_estimators=100, learning_rate=0.05, max_depth=4, random_state=42)),
+            ("lightgbm", LGBMClassifier(n_estimators=100, learning_rate=0.05, max_depth=4, random_state=42, verbose=-1)),
+            ("extratrees", ExtraTreesClassifier(n_estimators=100, random_state=42, n_jobs=-1)),
+            ("svm", SVC(kernel="rbf", C=1.0, probability=True, random_state=42))
+        ]
+        meta_learner = LogisticRegression(max_iter=1000, class_weight="balanced", random_state=42)
+
+        clf = StackingClassifier(
+            estimators=base_estimators,
+            final_estimator=meta_learner,
+            cv=3,
+            stack_method="predict_proba",
+            n_jobs=-1
+        )
         clf.fit(X_encoded, y_encoded)
 
         model = clf
