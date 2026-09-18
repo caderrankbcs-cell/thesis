@@ -15,7 +15,7 @@ from sklearn.ensemble import RandomForestClassifier
 app = FastAPI(
     title="Student Academic Achievement Prediction API",
     description="FastAPI backend utilizing Random Forest ML model.",
-    version="2.7.0"
+    version="2.7.1"
 )
 
 app.add_middleware(
@@ -240,8 +240,8 @@ def predict_student(payload: StudentInput):
         probabilities = {label_mapping.get(str(cls), str(cls)): float(probs[i]) for i, cls in enumerate(label_encoder.classes_)}
 
         explanation = [
-            {"feature": "দৈনিক নিজ-অধ্যয়ন সময়", "value": str(input_dict.get("C2_Dead_Study_Hours", input_dict.get("C2_Daily_Self_Study_Hours"))), "impact": 0.28, "direction": "positive"},
-            {"feature": "ক্লাসে উপস্থিতির হার", "value": str(user_att := input_dict.get("C1_Class_Attendance_Rate")), "impact": 0.22, "direction": "positive"}
+            {"feature": "দৈনিক নিজ-অধ্যয়ন সময়", "value": str(input_dict.get("C2_Daily_Self_Study_Hours")), "impact": 0.28, "direction": "positive"},
+            {"feature": "ক্লাসে উপস্থিতির হার", "value": str(input_dict.get("C1_Class_Attendance_Rate")), "impact": 0.22, "direction": "positive"}
         ]
         recommendations = generate_recommendations(human_prediction, input_dict)
         return {
@@ -259,7 +259,7 @@ def predict_student(payload: StudentInput):
 def submit_feedback(feedback: FeedbackInput, background_tasks: BackgroundTasks):
     try:
         data = feedback.student_data.model_dump()
-        data["Q1_SSC_GPA"] = feedback.actual_gpa_calendar := feedback.actual_gpa_category
+        data["Q1_SSC_GPA"] = feedback.actual_gpa_category
         df_new = pd.DataFrame([data])
         if os.path.exists(FEEDBACK_CSV_PATH):
             df_existing = pd.read_csv(FEEDBACK_CSV_PATH)
